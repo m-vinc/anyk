@@ -1,6 +1,6 @@
 # Anyk
 
-Anyk is a little utility that track health of a services using DNS or HTTP query and announce anycasts IP by manipulating FRR config through vtysh.
+Anyk is a small utility that tracks the health of services using DNS or HTTP queries and announces anycast IPs by manipulating the FRR configuration through vtysh.
 
 ## Build
 
@@ -8,11 +8,13 @@ Everything you need to build Anyk is `make` and the `Go toolchain`.
 
 ```
 $ make
+Building anyk with version 1.0.0...
+GOOS=linux GOARCH=amd64 go build  -trimpath -ldflags "-X main.version=1.0.0" -o ./build/anyk
 ```
 
 ## Usage
 
-Write a anyk yaml configuration file :
+Write an Anyk YAML configuration file :
 
 ```yaml
 router: 65534
@@ -44,7 +46,7 @@ services:
           expected: "MY.LAN"
 ```
 
-Run anyk and specify your config file :
+Run Anyk and specify your config file. If you need to run it periodically, you can use your favorite cron daemon:
 
 ```
 $ anyk run anyk.yml
@@ -56,3 +58,4 @@ $ anyk run anyk.yml
 2026/02/22 21:48:03 executing vtysh command: [-c config -c router bgp 65534 -c address-family ipv4 unicast -c network 10.0.0.1]
 2026/02/22 21:48:03 executing vtysh command: [-c config -c router bgp 65534 -c address-family ipv6 unicast -c network fd00:0dc9:e421::1/128]
 ```
+
