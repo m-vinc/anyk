@@ -1,0 +1,28 @@
+router: 65534
+
+services:
+  - name: a_simple_nginx_instance
+    active: true
+    anycast_ips: [10.0.0.1]
+    endpoints:
+      - ip: 10.0.0.5
+        http_check:
+          type: GET
+          expected_code: 200
+
+  - name: dc
+    active: true
+    anycast_ips: [fd00:0dc9:e421::1, 10.0.1.1]
+    endpoints:
+      - ip: 10.0.1.5
+        dns_check:
+          type: TXT
+          query: _kerberos.my.lan.
+          expected: "MY.LAN"
+
+      - ip: fd00:0dc9:e421::5
+        dns_check:
+          type: TXT
+          query: _kerberos.my.lan.
+          expected: "MY.LAN"
+
