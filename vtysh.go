@@ -1,163 +1,166 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net"
 	"os/exec"
 	"strconv"
 )
 
-type VtyshBGP struct {
-	Prefix string          `json:"prefix"`
-	Paths  []*VtyshBGPPath `json:"paths"`
+type vtyshRoute struct {
+	Distance int            `json:"distance"`
+	Nexthops []vtyshNexthop `json:"nexthops"`
 }
 
-type VtyshBGPPath struct {
-	ASPath *VtyshBGPASPath `json:"aspath"`
-	Origin string          `json:"origin"`
-	Valid  bool            `json:"valid"`
-	Local  bool            `json:"local"`
+type vtyshNexthop struct {
+	Ip  string `json:"ip"`
+	Afi string `json:"afi"`
 }
 
-type VtyshBGPASPath struct {
-	String string `json:"string"`
+type vtyshSelfOriginate struct {
+	Routes vtyshRoutes `json:"routes"`
 }
 
-type VtyshRoute struct {
-	Prefix                   string         `json:"prefix"`
-	PrefixLen                int            `json:"prefixLen"`
-	Protocol                 string         `json:"protocol"`
-	VrfId                    int            `json:"vrfId"`
-	VrfName                  string         `json:"vrfName"`
-	Selected                 bool           `json:"selected"`
-	DestSelected             bool           `json:"destSelected"`
-	Distance                 int            `json:"distance"`
-	Metric                   int            `json:"metric"`
-	Installed                bool           `json:"installed"`
-	Table                    int            `json:"table"`
-	InternalStatus           int            `json:"internalStatus"`
-	InternalFlags            int            `json:"internalFlags"`
-	InternalNextHopNum       int            `json:"internalNextHopNum"`
-	InternalNextHopActiveNum int            `json:"internalNextHopActiveNum"`
-	NexthopGroupId           int            `json:"nexthopGroupId"`
-	InstalledNexthopGroupId  int            `json:"installedNexthopGroupId"`
-	Uptime                   string         `json:"uptime"`
-	Nexthops                 []VtyshNexthop `json:"nexthops"`
+type vtyshRoutes map[string][]*vtyshRoute
+
+type vtyshAction interface {
+	command() []string
 }
 
-type VtyshNexthop struct {
-	Flags          int    `json:"flags"`
-	Fib            bool   `json:"fib"`
-	Ip             string `json:"ip"`
-	Afi            string `json:"afi"`
-	InterfaceIndex int    `json:"interfaceIndex"`
-	InterfaceName  string `json:"interfaceName"`
-	Active         bool   `json:"active"`
-	Weight         int    `json:"weight"`
+type announceAction struct {
+	router string
+	remove bool
+	afi    string
+	prefix *Net
 }
 
-type VtyshRoutes map[string][]*VtyshRoute
-
-func VtyshHasLocalRoute(ctx context.Context, prefix *AnykNet) (bool, error) {
-	afi := ""
-	if prefix.Afi == "ipv4" {
-		afi = "ip "
+func (a *announceAction) command() []string {
+	neg := ""
+	if a.remove {
+		neg = "no "
 	}
 
-	args := []string{"-c", "show " + afi + "bgp " + prefix.CidrString + " json"}
-	log.Printf("executing vtysh command: %+v", args)
-	cmd := exec.CommandContext(ctx, "vtysh", args...)
-
-	out := new(bytes.Buffer)
-	outerr := new(bytes.Buffer)
-
-	cmd.Stdout = out
-	cmd.Stderr = outerr
-
-	err := cmd.Run()
-	if err != nil {
-		return false, err
-	}
-
-	bgpInfo := VtyshBGP{}
-	err = json.Unmarshal(out.Bytes(), &bgpInfo)
-	if err != nil {
-		return false, err
-	}
-
-	if len(bgpInfo.Paths) == 0 {
-		return false, nil
-	}
-
-	for _, p := range bgpInfo.Paths {
-		if p.Origin == "IGP" && p.Valid && p.Local {
-			return true, nil
-		}
-	}
-
-	return false, nil
+	return []string{"-c", "config", "-c", "router bgp " + a.router, "-c", "address-family " + a.afi + " unicast", "-c", neg + "network " + a.prefix.String()}
 }
 
-func VtyshShowIPRoute(ctx context.Context, afi string, routeType string, filter []*net.IPNet) (VtyshRoutes, error) {
-	if afi != "ipv4" && afi != "ipv6" {
-		return nil, fmt.Errorf("supported protocol: ip ipv6")
+type routeAction struct {
+	remove   bool
+	afi      string
+	prefix   *Net
+	distance int
+	via      *IP
+}
+
+func (r *routeAction) command() []string {
+	neg := ""
+	if r.remove {
+		neg = "no "
 	}
 
-	if routeType != "static" {
-		return nil, fmt.Errorf("supported routeType: static")
+	proto := "ip"
+	if r.afi == "ipv6" {
+		proto = r.afi
 	}
+
+	dist := ""
+	if r.distance > 1 {
+		dist = " " + strconv.Itoa(r.distance)
+	}
+
+	return []string{"-c", "config", "-c", neg + proto + " route " + r.prefix.String() + " " + r.via.String() + dist}
+}
+
+func vtyshShowSelfOriginate(ctx context.Context, afi string, filter []*net.IPNet) (vtyshRoutes, error) {
+	l := WithLogger(ctx)
 
 	proto := "ip"
 	if afi == "ipv6" {
 		proto = afi
 	}
 
-	cmd := exec.CommandContext(ctx, "vtysh", "-c", "show "+proto+" route "+routeType+" json")
+	command := []string{"vtysh", "-c", "show " + proto + " bgp self-originate json"}
+	l.Debug().Strs("command", command).Msgf("executing vtysh command")
 
-	out := new(bytes.Buffer)
-	outerr := new(bytes.Buffer)
-
-	cmd.Stdout = out
-	cmd.Stderr = outerr
-
-	err := cmd.Run()
+	cmd := exec.CommandContext(ctx, command[0], command[1:]...)
+	out, err := cmd.Output()
 	if err != nil {
 		return nil, err
 	}
 
-	routes := VtyshRoutes{}
-	err = json.Unmarshal(out.Bytes(), &routes)
-	if err != nil {
+	soRoutes := vtyshSelfOriginate{}
+	if err := json.Unmarshal(out, &soRoutes); err != nil {
 		return nil, err
 	}
 
-	if len(filter) > 0 {
-		toRemove := []string{}
-		for prefix := range routes {
-			netIP, _, err := net.ParseCIDR(prefix)
-			if err != nil {
-				return nil, err
-			}
+	if len(filter) == 0 {
+		return soRoutes.Routes, nil
+	}
 
-			contained := false
-			for _, prefixFilter := range filter {
-				if prefixFilter.Contains(netIP) {
-					contained = true
-					break
-				}
-			}
-
-			if !contained {
-				toRemove = append(toRemove, prefix)
-			}
-
+	for prefix := range soRoutes.Routes {
+		netIP, _, err := net.ParseCIDR(prefix)
+		if err != nil {
+			return nil, err
 		}
 
-		for _, prefix := range toRemove {
+		contained := false
+		for _, f := range filter {
+			if f.Contains(netIP) {
+				contained = true
+				break
+			}
+		}
+
+		if !contained {
+			delete(soRoutes.Routes, prefix)
+		}
+	}
+
+	return soRoutes.Routes, nil
+}
+
+func vtyshShowRoutes(ctx context.Context, afi string, filter []*net.IPNet) (vtyshRoutes, error) {
+	l := WithLogger(ctx)
+
+	proto := "ip"
+	if afi == "ipv6" {
+		proto = afi
+	}
+
+	command := []string{"vtysh", "-c", "show " + proto + " route static json"}
+	l.Debug().Strs("command", command).Msgf("executing vtysh command")
+
+	cmd := exec.CommandContext(ctx, command[0], command[1:]...)
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, err
+	}
+
+	routes := vtyshRoutes{}
+	if err := json.Unmarshal(out, &routes); err != nil {
+		return nil, err
+	}
+
+	if len(filter) == 0 {
+		return routes, nil
+	}
+
+	for prefix := range routes {
+		netIP, _, err := net.ParseCIDR(prefix)
+		if err != nil {
+			return nil, err
+		}
+
+		contained := false
+		for _, f := range filter {
+			if f.Contains(netIP) {
+				contained = true
+				break
+			}
+		}
+
+		if !contained {
 			delete(routes, prefix)
 		}
 	}
@@ -165,71 +168,29 @@ func VtyshShowIPRoute(ctx context.Context, afi string, routeType string, filter 
 	return routes, nil
 }
 
-func VtyshExecute(ctx context.Context, actions []VtyshAction) error {
-	for _, action := range actions {
-		args := action.Command()
-		log.Printf("executing vtysh command: %+v", args)
-		cmd := exec.CommandContext(ctx, "vtysh", args...)
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			return fmt.Errorf("vtysh action execution failed %w: %+v", err, string(out))
-		}
+func vtyshExecute(ctx context.Context, actions []vtyshAction) error {
+	l := WithLogger(ctx)
+
+	if len(actions) == 0 {
+		return nil
 	}
 
-	return VtyshWriteMem(ctx)
-}
-
-func VtyshWriteMem(ctx context.Context) error {
-	cmd := exec.CommandContext(ctx, "vtysh", "-c", "write mem")
-	_, err := cmd.CombinedOutput()
-	return err
-}
-
-type VtyshAnnounceAction struct {
-	Router string
-	Remove bool
-
-	Afi    string
-	Prefix *AnykNet
-}
-
-func (aa *VtyshAnnounceAction) Command() []string {
-	negation := ""
-	if aa.Remove {
-		negation = "no "
+	var args []string
+	for _, a := range actions {
+		args = append(args, a.command()...)
+		args = append(args, "-c", "end")
 	}
 
-	return []string{"-c", "config", "-c", "router bgp " + aa.Router, "-c", "address-family " + aa.Afi + " unicast", "-c", negation + "network " + aa.Prefix.String()}
-}
+	args = append(args, "-c", "write mem")
 
-type VtyshRouteAction struct {
-	Remove bool
+	command := append([]string{"vtysh"}, args...)
+	l.Debug().Strs("command", command).Msgf("executing vtysh command")
 
-	Afi      string
-	Prefix   *AnykNet
-	Distance int
-	Via      *AnykIP
-}
-
-func (ra *VtyshRouteAction) Command() []string {
-	negation := ""
-	if ra.Remove {
-		negation = "no "
+	cmd := exec.CommandContext(ctx, "vtysh", args...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("vtysh: %w: %s", err, out)
 	}
 
-	afi := "ip"
-	if ra.Afi == "ipv6" {
-		afi = ra.Afi
-	}
-
-	distance := ""
-	if ra.Distance > 1 {
-		distance = " " + strconv.FormatInt(int64(ra.Distance), 10)
-	}
-
-	return []string{"-c", "config", "-c", negation + afi + " route " + ra.Prefix.String() + " " + ra.Via.String() + distance}
-}
-
-type VtyshAction interface {
-	Command() []string
+	return nil
 }

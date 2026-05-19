@@ -13,77 +13,129 @@ import (
 	"codeberg.org/miekg/dns"
 )
 
-func httpCheck(ctx context.Context, endpoint *AnykServiceEndpoint) (bool, error) {
-	u, err := url.Parse(endpoint.HTTPCheck.URL)
+
+const defaultHTTPTimeout = 5 * time.Second
+const defaultDNSTimeout = 1 * time.Second
+
+func httpCheck(ctx context.Context, endpoint *AnykEndpoint) (bool, error) {
+	check := endpoint.HTTPCheck
+
+	verb := check.Verb
+	if verb == "" {
+		verb = "GET"
+	}
+	expectedCode := check.ExpectedCode
+	if expectedCode == 0 {
+		expectedCode = 200
+	}
+
+	u, err := url.Parse(check.URL)
 	if err != nil {
 		return false, err
 	}
-
 	if u.Scheme == "" {
 		u.Scheme = "http"
 	}
-
 	if u.Host == "" {
-		u.Host = endpoint.IP.String()
-		if endpoint.Afi == "ipv6" {
-			u.Host = "[" + u.Host + "]"
+		u.Host = endpoint.IP
+		if strings.Contains(endpoint.IP, ":") {
+			u.Host = "[" + endpoint.IP + "]"
 		}
 	}
 
-	var body io.Reader = nil
-	if endpoint.HTTPCheck.Body != "" {
-		body = strings.NewReader(endpoint.HTTPCheck.Body)
+	var body io.Reader
+	if check.Body != "" {
+		body = strings.NewReader(check.Body)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, endpoint.HTTPCheck.Verb, u.String(), body)
+	timeout := defaultHTTPTimeout
+	if check.Timeout > 0 {
+		timeout = time.Duration(check.Timeout) * time.Second
+	}
+	client := &http.Client{Timeout: timeout}
+
+	req, err := http.NewRequestWithContext(ctx, verb, u.String(), body)
 	if err != nil {
 		return false, err
 	}
-
-	if len(endpoint.HTTPCheck.Headers) > 0 {
-		for key, value := range endpoint.HTTPCheck.Headers {
-			req.Header.Add(key, value)
-		}
+	for k, v := range check.Headers {
+		req.Header.Add(k, v)
 	}
 
-	res, err := http.DefaultClient.Do(req)
+	res, err := client.Do(req)
 	if err != nil {
 		return false, err
 	}
+	defer res.Body.Close()
+	_, _ = io.Copy(io.Discard, res.Body)
 
-	if res.StatusCode != endpoint.HTTPCheck.ExpectedCode {
-		return false, nil
-	}
-
-	return true, nil
+	return res.StatusCode == expectedCode, nil
 }
 
-func dnsCheck(ctx context.Context, endpoint *AnykServiceEndpoint) (bool, error) {
-	if endpoint.DNSCheck.Type != "A" && endpoint.DNSCheck.Type != "TXT" {
-		return false, fmt.Errorf("unsupported dns check query type: %+v", endpoint.DNSCheck.Type)
+const maxCNAMEDepth = 10
+
+func resolveCNAME(ctx context.Context, client *dns.Client, resolver, name string) (string, error) {
+	for range maxCNAMEDepth {
+		msg := dns.NewMsg(name, dns.TypeCNAME)
+		in, _, err := client.Exchange(ctx, msg, "udp", resolver)
+		if err != nil {
+			return "", err
+		}
+		next := ""
+		for _, rr := range in.Answer {
+			if cname, ok := rr.(*dns.CNAME); ok {
+				next = cname.Target
+				break
+			}
+		}
+		if next == "" {
+			return name, nil
+		}
+		name = next
+	}
+	return "", fmt.Errorf("CNAME chain exceeds maximum depth (%d)", maxCNAMEDepth)
+}
+
+func dnsCheck(ctx context.Context, endpoint *AnykEndpoint) (bool, error) {
+	check := endpoint.DNSCheck
+	if check.Type != "A" && check.Type != "TXT" {
+		return false, fmt.Errorf("unsupported dns check type: %s", check.Type)
+	}
+
+	timeout := defaultDNSTimeout
+	if check.Timeout > 0 {
+		timeout = time.Duration(check.Timeout) * time.Second
 	}
 
 	client := new(dns.Client)
 	client.Transport = dns.NewTransport()
-	client.Transport.ReadTimeout = time.Second * 1
-	client.Transport.WriteTimeout = time.Second * 1
-	var msg *dns.Msg
+	client.Transport.ReadTimeout = timeout
+	client.Transport.WriteTimeout = timeout
 
-	switch endpoint.DNSCheck.Type {
-	case "A":
-		msg = dns.NewMsg(endpoint.DNSCheck.Query, dns.TypeA)
-	case "TXT":
-		msg = dns.NewMsg(endpoint.DNSCheck.Query, dns.TypeTXT)
-	}
-
-	resolver := endpoint.DNSCheck.Resolver
-
-	if endpoint.DNSCheck.Resolver == "" {
-		resolver = endpoint.IP.String()
+	resolver := check.Resolver
+	if resolver == "" {
+		resolver = endpoint.IP
 		if strings.Contains(resolver, ":") {
 			resolver = "[" + resolver + "]"
 		}
 		resolver += ":53"
+	}
+
+	query := check.Query
+	if check.FollowCNAME {
+		var err error
+		query, err = resolveCNAME(ctx, client, resolver, query)
+		if err != nil {
+			return false, err
+		}
+	}
+
+	var msg *dns.Msg
+	switch check.Type {
+	case "A":
+		msg = dns.NewMsg(query, dns.TypeA)
+	case "TXT":
+		msg = dns.NewMsg(query, dns.TypeTXT)
 	}
 
 	in, _, err := client.Exchange(ctx, msg, "udp", resolver)
@@ -92,55 +144,42 @@ func dnsCheck(ctx context.Context, endpoint *AnykServiceEndpoint) (bool, error) 
 	}
 
 	for _, answer := range in.Answer {
-		if endpoint.DNSCheck.Type == "A" {
-			a, ok := answer.(*dns.A)
-			if !ok {
-				continue
-			}
-
-			if a.A.String() == endpoint.DNSCheck.Expected {
+		switch check.Type {
+		case "A":
+			if a, ok := answer.(*dns.A); ok && a.A.String() == check.Expected {
 				return true, nil
 			}
-		}
-
-		if endpoint.DNSCheck.Type == "TXT" {
-			txt, ok := answer.(*dns.TXT)
-			if !ok {
-				continue
-			}
-
-			text, _ := strconv.Unquote(txt.TXT.String())
-			if text == endpoint.DNSCheck.Expected {
-				return true, nil
+		case "TXT":
+			if txt, ok := answer.(*dns.TXT); ok {
+				s := txt.TXT.String()
+				if text, err := strconv.Unquote(s); err == nil {
+					if text == check.Expected {
+						return true, nil
+					}
+				} else if s == check.Expected {
+					return true, nil
+				}
 			}
 		}
 	}
-
 	return false, nil
 }
 
-func healthcheck(ctx context.Context, endpoint *AnykServiceEndpoint) (bool, error) {
+func healthcheck(ctx context.Context, endpoint *AnykEndpoint) (bool, error) {
+	if endpoint.DNSCheck == nil && endpoint.HTTPCheck == nil {
+		return false, fmt.Errorf("endpoint %q has no checks configured", endpoint.IP)
+	}
 	if endpoint.DNSCheck != nil {
 		ok, err := dnsCheck(ctx, endpoint)
-		if err != nil {
+		if err != nil || !ok {
 			return false, err
 		}
-
-		if !ok {
-			return false, nil
-		}
 	}
-
 	if endpoint.HTTPCheck != nil {
 		ok, err := httpCheck(ctx, endpoint)
-		if err != nil {
+		if err != nil || !ok {
 			return false, err
 		}
-
-		if !ok {
-			return false, nil
-		}
 	}
-
 	return true, nil
 }

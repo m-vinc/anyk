@@ -3,177 +3,203 @@ package main
 import (
 	"context"
 	"fmt"
-	"github.com/goccy/go-yaml"
-	"log"
 	"net"
-	"os"
+	"os/exec"
 	"strings"
+	"sync"
 )
 
-type RunCmd struct {
-	Config string `arg:"" name:"config" type:"path" help:"Path to configuration file." required:""`
+type endpointResult struct {
+	healthy bool
+	err     error
 }
 
-func (r *RunCmd) Run() error {
-	content, err := os.ReadFile(r.Config)
-	if err != nil {
-		return fmt.Errorf("cannot read config file: %w", err)
-	}
+func Run(ctx context.Context, asn int, services []AnykService) error {
+	log := WithLogger(ctx)
 
-	cfg := &AnykConfig{}
-	err = yaml.Unmarshal(content, cfg)
-	if err != nil {
-		return fmt.Errorf("cannot unmarshal config: %w", err)
-	}
+	router := fmt.Sprintf("%d", asn)
 
-	log.Println("Running with config:", r.Config, cfg)
-	for _, svc := range cfg.Services {
+	for _, svc := range services {
 		if len(svc.AnycastIPs) == 0 {
 			continue
 		}
 
-		anycastNets := []*AnykNet{}
-		for _, ip := range svc.AnycastIPs {
-			var ipnet *net.IPNet
-			sip := ip.String()
-			afi := "ipv4"
+		anycastNets := []*Net{}
+		afis := map[string]bool{}
 
-			if strings.Contains(sip, ":") {
-				afi = "ipv6"
-				_, ipnet, err = net.ParseCIDR(sip + "/128")
-				if err != nil {
-					return err
-				}
-			} else {
-				_, ipnet, err = net.ParseCIDR(sip + "/32")
-				if err != nil {
-					return err
-				}
+		for _, cidr := range svc.AnycastIPs {
+			_, ipnet, err := net.ParseCIDR(cidr)
+			if err != nil {
+				return fmt.Errorf("anycast_ip %q: %w", cidr, err)
 			}
-			anycastNets = append(anycastNets, &AnykNet{IPNet: ipnet, Afi: afi, CidrString: ipnet.String()})
+			afi := "ipv4"
+			if strings.Contains(cidr, ":") {
+				afi = "ipv6"
+			}
+			afis[afi] = true
+			anycastNets = append(anycastNets, &Net{IPNet: ipnet, Afi: afi, CidrString: ipnet.String()})
 		}
 
-		// Healthchecks and stack every endpoint we need to handle
-		routeActions := map[string][]*VtyshRouteAction{}
-		announceActions := map[string]*VtyshAnnounceAction{}
-		routeTargets := []*AnykIP{}
+		results := make([]endpointResult, len(svc.Endpoints))
+		if svc.Active {
+			var wg sync.WaitGroup
+			for i := range svc.Endpoints {
+				wg.Add(1)
+				go func(i int) {
+					defer wg.Done()
+					results[i].healthy, results[i].err = healthcheck(ctx, &svc.Endpoints[i])
+				}(i)
+			}
+			wg.Wait()
+		}
 
-		for _, endpoint := range svc.Endpoints {
-			if endpoint.Distance <= 0 {
-				endpoint.Distance = 1
+		routeActions := map[string][]*routeAction{}
+		announceActions := map[string]*announceAction{}
+		serviceHealthy := false
+
+		for i := range svc.Endpoints {
+			ep := &svc.Endpoints[i]
+			if ep.Distance <= 0 {
+				ep.Distance = 1
+			}
+			afi := "ipv4"
+			if strings.Contains(ep.IP, ":") {
+				afi = "ipv6"
 			}
 
-			endpoint.Afi = "ipv4"
-			if strings.Contains(endpoint.IP.String(), ":") {
-				endpoint.Afi = "ipv6"
-			}
-
-			var health bool
-
+			healthy := false
 			if svc.Active {
-				health, err = healthcheck(context.Background(), endpoint)
-				if !health || err != nil {
-					log.Printf("healthcheck failed: %+v %+v", health, err)
+				if results[i].err != nil {
+					log.Warn().Str("service", svc.Name).Str("endpoint", ep.IP).Err(results[i].err).Msg("healthcheck error")
+				}
+				healthy = results[i].healthy
+				if healthy {
+					serviceHealthy = true
 				}
 			}
 
-			for _, aip := range anycastNets {
-				if aip.Afi != endpoint.Afi {
+			log.Debug().Str("service", svc.Name).Str("endpoint", ep.IP).Bool("healthy", healthy).Msg("healthcheck")
+
+			epIP := &IP{IP: net.ParseIP(ep.IP), IPString: ep.IP, Afi: afi}
+
+			for _, anet := range anycastNets {
+				if anet.Afi != afi {
 					continue
 				}
 
-				if _, ok := routeActions[aip.CidrString]; !ok {
-					routeActions[aip.CidrString] = []*VtyshRouteAction{}
+				if _, ok := routeActions[anet.CidrString]; !ok {
+					routeActions[anet.CidrString] = nil
 				}
 
-				ip := &AnykIP{IP: endpoint.IP, IPString: endpoint.IP.String(), Afi: endpoint.Afi}
-				routeActions[aip.CidrString] = append(routeActions[aip.CidrString], &VtyshRouteAction{
-					Remove:   !health,
-					Distance: endpoint.Distance,
-					Afi:      endpoint.Afi,
-					Prefix:   aip,
-					Via:      ip,
+				routeActions[anet.CidrString] = append(routeActions[anet.CidrString], &routeAction{
+					remove:   !healthy,
+					distance: ep.Distance,
+					afi:      afi,
+					prefix:   anet,
+					via:      epIP,
 				})
-				routeTargets = append(routeTargets, ip)
 
-				if _, ok := announceActions[aip.CidrString]; !ok {
-					announceActions[aip.CidrString] = &VtyshAnnounceAction{Router: cfg.Router, Remove: !health, Afi: endpoint.Afi, Prefix: aip}
+				if _, ok := announceActions[anet.CidrString]; !ok {
+					announceActions[anet.CidrString] = &announceAction{router: router, remove: !healthy, afi: afi, prefix: anet}
 				}
 
-				if health && announceActions[aip.CidrString].Remove {
-					announceActions[aip.CidrString].Remove = false
+				if healthy && announceActions[anet.CidrString].remove {
+					announceActions[anet.CidrString].remove = false
 				}
 			}
 		}
 
-		actions := []VtyshAction{}
+		routeCache := map[string]vtyshRoutes{}
+		soCache := map[string]vtyshRoutes{}
+		for afi := range afis {
+			routes, err := vtyshShowRoutes(ctx, afi, nil)
+			if err != nil {
+				return err
+			}
+			routeCache[afi] = routes
+
+			soRoutes, err := vtyshShowSelfOriginate(ctx, afi, nil)
+			if err != nil {
+				return err
+			}
+			soCache[afi] = soRoutes
+		}
+
+		var actions []vtyshAction
 
 		for _, ras := range routeActions {
-			for _, ra := range ras {
-				routes, err := VtyshShowIPRoute(context.Background(), ra.Afi, "static", []*net.IPNet{ra.Prefix.IPNet})
-				if err != nil {
-					return err
-				}
+			if len(ras) == 0 {
+				continue
+			}
 
+			routes := routeCache[ras[0].afi]
+
+			for _, ra := range ras {
 				exist := false
-				for _, r := range routes[ra.Prefix.CidrString] {
+				for _, r := range routes[ra.prefix.CidrString] {
 					for _, nh := range r.Nexthops {
-						if nh.Afi != ra.Afi {
+						if nh.Afi != ra.afi {
 							continue
 						}
 
-						nhIP := net.ParseIP(nh.Ip)
-						nhAnykIP := &AnykIP{IP: nhIP, IPString: nhIP.String(), Afi: nh.Afi}
-
-						allowed := false
-						for _, rt := range routeTargets {
-							if rt.Afi == nh.Afi && rt.IPString == nh.Ip {
-								allowed = true
-								break
-							}
-						}
-
-						if !allowed {
-							actions = append(actions, &VtyshRouteAction{Remove: true, Prefix: ra.Prefix, Via: nhAnykIP})
-						}
-
-						if nh.Ip == ra.Via.IPString {
-							if r.Distance != ra.Distance && !ra.Remove {
-								actions = append(actions, &VtyshRouteAction{Remove: true, Prefix: ra.Prefix, Via: nhAnykIP, Distance: r.Distance})
+						if nh.Ip == ra.via.IPString {
+							if r.Distance != ra.distance && !ra.remove {
+								nhIP := &IP{IP: net.ParseIP(nh.Ip), IPString: nh.Ip, Afi: nh.Afi}
+								actions = append(actions, &routeAction{remove: true, afi: ra.afi, prefix: ra.prefix, via: nhIP, distance: r.Distance})
 								continue
 							}
-
 							exist = true
-							continue
 						}
-					}
-
-					if exist {
-						break
 					}
 				}
 
-				if exist == ra.Remove {
+				if exist == ra.remove {
 					actions = append(actions, ra)
 				}
 			}
 		}
 
-		for _, aas := range announceActions {
-			ok, err := VtyshHasLocalRoute(context.TODO(), aas.Prefix)
+		for _, aa := range announceActions {
+			announced := false
+			for prefix := range soCache[aa.afi] {
+				netIP, _, err := net.ParseCIDR(prefix)
+				if err != nil {
+					return err
+				}
+
+				if aa.prefix.IPNet.Contains(netIP) {
+					announced = true
+					break
+				}
+			}
+
+			if announced && aa.remove || !announced && !aa.remove {
+				actions = append(actions, aa)
+			}
+		}
+
+		if err := vtyshExecute(ctx, actions); err != nil {
+			return fmt.Errorf("service %s: %w", svc.Name, err)
+		}
+
+		for _, callback := range svc.Callbacks {
+			if callback.Healthy != serviceHealthy || len(callback.Command) == 0 {
+				continue
+			}
+
+			log.Debug().
+				Str("service", svc.Name).
+				Strs("command", callback.Command).
+				Msgf("executing callback")
+
+			cmd := exec.CommandContext(ctx, callback.Command[0], callback.Command[1:]...)
+			out, err := cmd.Output()
 			if err != nil {
-				return err
-			}
-
-			if ok && aas.Remove || !ok && !aas.Remove {
-				actions = append(actions, aas)
+				log.Info().Str("service", svc.Name).Err(err).Str("stdout", string(out)).Msg("error while executing callback")
 			}
 		}
 
-		err = VtyshExecute(context.TODO(), actions)
-		if err != nil {
-			return err
-		}
+		log.Info().Str("service", svc.Name).Int("actions", len(actions)).Msg("anycast: applied")
 	}
 
 	return nil
