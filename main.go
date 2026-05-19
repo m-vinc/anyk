@@ -13,6 +13,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var version string
+
 func loadConfig(path string) (*AnykConfig, error) {
 	content, err := os.ReadFile(path)
 	if err != nil {
@@ -127,7 +129,7 @@ func main() {
 		Short:         "Anycast healthcheck & routing",
 		SilenceUsage:  true,
 		SilenceErrors: true,
-		Version:       "v1.0.0",
+		Version:       version,
 		PersistentPreRunE: func(_ *cobra.Command, _ []string) error {
 			lvl, err := zerolog.ParseLevel(logLevel)
 			if err != nil {
