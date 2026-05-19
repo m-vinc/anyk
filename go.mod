@@ -7,8 +7,6 @@ require (
 	github.com/goccy/go-yaml v1.19.2
 	github.com/rs/zerolog v1.35.1
 	github.com/spf13/cobra v1.10.2
-	go.yaml.in/yaml/v3 v3.0.4
-	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (

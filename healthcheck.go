@@ -13,7 +13,6 @@ import (
 	"codeberg.org/miekg/dns"
 )
 
-
 const defaultHTTPTimeout = 5 * time.Second
 const defaultDNSTimeout = 1 * time.Second
 
