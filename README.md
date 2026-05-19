@@ -17,7 +17,7 @@ GOOS=linux GOARCH=amd64 go build  -trimpath -ldflags "-X main.version=1.0.0" -o 
 Write an Anyk YAML configuration file :
 
 ```yaml
-router: 65534
+asn: 65534
 
 services:
   - name: a_simple_nginx_instance
@@ -32,6 +32,11 @@ services:
   - name: dc
     active: true
     anycast_ips: [fd00:0dc9:e421::1, 10.0.1.1]
+    callbacks:
+      - healthy: true
+        command: "echo 'service healthy'"
+      - healthy: true
+        command: "echo 'unhealthy'"
     endpoints:
       - ip: 10.0.1.5
         dns_check:
