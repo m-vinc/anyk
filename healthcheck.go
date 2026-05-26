@@ -97,7 +97,7 @@ func resolveCNAME(ctx context.Context, client *dns.Client, resolver, name string
 
 func dnsCheck(ctx context.Context, endpoint *AnykEndpoint) (bool, error) {
 	check := endpoint.DNSCheck
-	if check.Type != "A" && check.Type != "TXT" {
+	if check.Type != "A" && check.Type != "AAAA" && check.Type != "TXT" {
 		return false, fmt.Errorf("unsupported dns check type: %s", check.Type)
 	}
 
@@ -133,6 +133,8 @@ func dnsCheck(ctx context.Context, endpoint *AnykEndpoint) (bool, error) {
 	switch check.Type {
 	case "A":
 		msg = dns.NewMsg(query, dns.TypeA)
+	case "AAAA":
+		msg = dns.NewMsg(query, dns.TypeAAAA)
 	case "TXT":
 		msg = dns.NewMsg(query, dns.TypeTXT)
 	}
@@ -146,6 +148,10 @@ func dnsCheck(ctx context.Context, endpoint *AnykEndpoint) (bool, error) {
 		switch check.Type {
 		case "A":
 			if a, ok := answer.(*dns.A); ok && a.A.String() == check.Expected {
+				return true, nil
+			}
+		case "AAAA":
+			if aaaa, ok := answer.(*dns.AAAA); ok && aaaa.AAAA.String() == check.Expected {
 				return true, nil
 			}
 		case "TXT":

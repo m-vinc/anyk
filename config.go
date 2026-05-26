@@ -1,5 +1,44 @@
 package main
 
+import (
+	"fmt"
+	"net"
+)
+
+func (c *AnykConfig) Validate() error {
+	if c.ASN <= 0 {
+		return fmt.Errorf("asn must be a positive integer")
+	}
+	for i, svc := range c.Services {
+		if svc.Name == "" {
+			return fmt.Errorf("services[%d]: name is required", i)
+		}
+		if len(svc.AnycastIPs) == 0 {
+			return fmt.Errorf("service %q: anycast_ips is required", svc.Name)
+		}
+		for _, cidr := range svc.AnycastIPs {
+			if _, _, err := net.ParseCIDR(cidr); err != nil {
+				return fmt.Errorf("service %q: anycast_ip %q is not a valid CIDR (use e.g. 10.0.0.1/32)", svc.Name, cidr)
+			}
+		}
+		for j, ep := range svc.Endpoints {
+			if net.ParseIP(ep.IP) == nil {
+				return fmt.Errorf("service %q endpoint[%d]: %q is not a valid IP address", svc.Name, j, ep.IP)
+			}
+			if ep.DNSCheck == nil && ep.HTTPCheck == nil {
+				return fmt.Errorf("service %q endpoint %q: at least one check (http_check or dns_check) is required", svc.Name, ep.IP)
+			}
+			if ep.DNSCheck != nil {
+				t := ep.DNSCheck.Type
+				if t != "A" && t != "AAAA" && t != "TXT" {
+					return fmt.Errorf("service %q endpoint %q: unsupported dns_check type %q (supported: A, AAAA, TXT)", svc.Name, ep.IP, t)
+				}
+			}
+		}
+	}
+	return nil
+}
+
 type AnykConfig struct {
 	ASN      int           `yaml:"asn" json:"asn,omitempty"`
 	Services []AnykService `yaml:"services,omitempty" json:"services,omitempty"`

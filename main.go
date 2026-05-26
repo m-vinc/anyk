@@ -24,6 +24,9 @@ func loadConfig(path string) (*AnykConfig, error) {
 	if err := yaml.Unmarshal(content, cfg); err != nil {
 		return nil, fmt.Errorf("cannot unmarshal config: %w", err)
 	}
+	if err := cfg.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid config: %w", err)
+	}
 	return cfg, nil
 }
 

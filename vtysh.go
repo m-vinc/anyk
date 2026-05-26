@@ -65,7 +65,7 @@ func (r *routeAction) command() []string {
 	}
 
 	dist := ""
-	if r.distance > 1 {
+	if !r.remove && r.distance > 1 {
 		dist = " " + strconv.Itoa(r.distance)
 	}
 

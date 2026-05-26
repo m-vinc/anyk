@@ -100,10 +100,10 @@ func Run(ctx context.Context, asn int, services []AnykService) error {
 				})
 
 				if _, ok := announceActions[anet.CidrString]; !ok {
-					announceActions[anet.CidrString] = &announceAction{router: router, remove: !healthy, afi: afi, prefix: anet}
+					announceActions[anet.CidrString] = &announceAction{router: router, remove: true, afi: afi, prefix: anet}
 				}
 
-				if healthy && announceActions[anet.CidrString].remove {
+				if healthy {
 					announceActions[anet.CidrString].remove = false
 				}
 			}
@@ -162,12 +162,7 @@ func Run(ctx context.Context, asn int, services []AnykService) error {
 		for _, aa := range announceActions {
 			announced := false
 			for prefix := range soCache[aa.afi] {
-				netIP, _, err := net.ParseCIDR(prefix)
-				if err != nil {
-					return err
-				}
-
-				if aa.prefix.IPNet.Contains(netIP) {
+				if prefix == aa.prefix.CidrString {
 					announced = true
 					break
 				}

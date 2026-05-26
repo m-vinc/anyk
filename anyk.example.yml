@@ -3,21 +3,21 @@ asn: 65534
 services:
   - name: a_simple_nginx_instance
     active: true
-    anycast_ips: [10.0.0.1]
+    anycast_ips: [10.0.0.1/32]
     endpoints:
       - ip: 10.0.0.5
         http_check:
-          type: GET
+          verb: GET
           expected_code: 200
 
   - name: dc
     active: true
-    anycast_ips: [fd00:0dc9:e421::1, 10.0.1.1]
+    anycast_ips: [fd00:0dc9:e421::1/128, 10.0.1.1/32]
     callbacks:
       - healthy: true
-        command: "echo 'service healthy'"
-      - healthy: true
-        command: "echo 'unhealthy'"
+        command: ["echo", "service healthy"]
+      - healthy: false
+        command: ["echo", "service unhealthy"]
     endpoints:
       - ip: 10.0.1.5
         dns_check:
