@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"io"
 	"net/http"
@@ -52,6 +53,11 @@ func httpCheck(ctx context.Context, endpoint *AnykEndpoint) (bool, error) {
 		timeout = time.Duration(check.Timeout) * time.Second
 	}
 	client := &http.Client{Timeout: timeout}
+	if check.InsecureSkipVerify {
+		client.Transport = &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		}
+	}
 
 	req, err := http.NewRequestWithContext(ctx, verb, u.String(), body)
 	if err != nil {

@@ -42,6 +42,7 @@ func Run(ctx context.Context, asn int, services []AnykService) error {
 
 		results := make([]endpointResult, len(svc.Endpoints))
 		if svc.Active {
+			log.Debug().Str("service", svc.Name).Msg("started checking service")
 			var wg sync.WaitGroup
 			for i := range svc.Endpoints {
 				wg.Add(1)
