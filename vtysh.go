@@ -77,12 +77,7 @@ func (r *routeAction) command() []string {
 func vtyshShowSelfOriginate(ctx context.Context, afi string, filter []*net.IPNet) (vtyshRoutes, error) {
 	l := zerolog.Ctx(ctx)
 
-	proto := "ip"
-	if afi == "ipv6" {
-		proto = afi
-	}
-
-	command := []string{"vtysh", "-c", "show " + proto + " bgp self-originate json"}
+	command := []string{"vtysh", "-c", "show bgp " + afi + " self-originate json"}
 	l.Debug().Strs("command", command).Msgf("executing vtysh command")
 
 	cmd := exec.CommandContext(ctx, command[0], command[1:]...)
