@@ -1,4 +1,4 @@
-package main
+package anyk
 
 import (
 	"context"
@@ -7,6 +7,8 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+
+	"github.com/rs/zerolog"
 )
 
 type endpointResult struct {
@@ -15,7 +17,7 @@ type endpointResult struct {
 }
 
 func Run(ctx context.Context, asn int, services []AnykService) error {
-	log := WithLogger(ctx)
+	log := zerolog.Ctx(ctx)
 
 	router := fmt.Sprintf("%d", asn)
 

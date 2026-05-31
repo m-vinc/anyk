@@ -9,18 +9,19 @@ import (
 	"time"
 
 	"github.com/goccy/go-yaml"
+	"github.com/m-vinc/anyk"
 	"github.com/rs/zerolog"
 	"github.com/spf13/cobra"
 )
 
 var version string
 
-func loadConfig(path string) (*AnykConfig, error) {
+func loadConfig(path string) (*anyk.AnykConfig, error) {
 	content, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("cannot read config file: %w", err)
 	}
-	cfg := &AnykConfig{}
+	cfg := &anyk.AnykConfig{}
 	if err := yaml.Unmarshal(content, cfg); err != nil {
 		return nil, fmt.Errorf("cannot unmarshal config: %w", err)
 	}
@@ -43,13 +44,13 @@ func runCmd() *cobra.Command {
 				if err != nil {
 					return err
 				}
-				return Run(cmd.Context(), cfg.ASN, cfg.Services)
+				return anyk.Run(cmd.Context(), cfg.ASN, cfg.Services)
 			}
 
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
 
-			log := WithLogger(ctx)
+			log := zerolog.Ctx(ctx)
 
 			cycle := func() {
 				cfg, err := loadConfig(*configPath)
@@ -57,7 +58,7 @@ func runCmd() *cobra.Command {
 					log.Error().Err(err).Msg("failed to load config")
 					return
 				}
-				if err := Run(ctx, cfg.ASN, cfg.Services); err != nil {
+				if err := anyk.Run(ctx, cfg.ASN, cfg.Services); err != nil {
 					log.Error().Err(err).Msg("cycle failed")
 				}
 			}
@@ -105,20 +106,12 @@ func cleanupCmd() *cobra.Command {
 			for i := range cfg.Services {
 				cfg.Services[i].Active = false
 			}
-			return Run(cmd.Context(), cfg.ASN, cfg.Services)
+			return anyk.Run(cmd.Context(), cfg.ASN, cfg.Services)
 		},
 	}
 
 	configPath = cmd.PersistentFlags().StringP("config", "c", "/etc/anyk.yml", "path to an anyk config file")
 	return cmd
-}
-
-type contextKey string
-
-const logKey contextKey = "log"
-
-func WithLogger(ctx context.Context) zerolog.Logger {
-	return ctx.Value(logKey).(zerolog.Logger)
 }
 
 func main() {
@@ -147,7 +140,7 @@ func main() {
 	root.AddCommand(runCmd(), cleanupCmd())
 	root.PersistentFlags().StringVar(&logLevel, "log-level", "info", "log level (debug, info, warn, error)")
 
-	if err := root.ExecuteContext(context.WithValue(context.Background(), logKey, l)); err != nil {
+	if err := root.ExecuteContext(l.WithContext(context.Background())); err != nil {
 		l.Fatal().Err(err).Msg("anycast loop failed")
 	}
 }

@@ -1,4 +1,4 @@
-package main
+package anyk
 
 import (
 	"context"
@@ -7,6 +7,8 @@ import (
 	"net"
 	"os/exec"
 	"strconv"
+
+	"github.com/rs/zerolog"
 )
 
 type vtyshRoute struct {
@@ -73,7 +75,7 @@ func (r *routeAction) command() []string {
 }
 
 func vtyshShowSelfOriginate(ctx context.Context, afi string, filter []*net.IPNet) (vtyshRoutes, error) {
-	l := WithLogger(ctx)
+	l := zerolog.Ctx(ctx)
 
 	proto := "ip"
 	if afi == "ipv6" {
@@ -121,7 +123,7 @@ func vtyshShowSelfOriginate(ctx context.Context, afi string, filter []*net.IPNet
 }
 
 func vtyshShowRoutes(ctx context.Context, afi string, filter []*net.IPNet) (vtyshRoutes, error) {
-	l := WithLogger(ctx)
+	l := zerolog.Ctx(ctx)
 
 	proto := "ip"
 	if afi == "ipv6" {
@@ -169,7 +171,7 @@ func vtyshShowRoutes(ctx context.Context, afi string, filter []*net.IPNet) (vtys
 }
 
 func vtyshExecute(ctx context.Context, actions []vtyshAction) error {
-	l := WithLogger(ctx)
+	l := zerolog.Ctx(ctx)
 
 	if len(actions) == 0 {
 		return nil

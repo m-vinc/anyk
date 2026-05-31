@@ -1,4 +1,4 @@
-package main
+package anyk
 
 import (
 	"fmt"
@@ -65,12 +65,12 @@ type AnykEndpoint struct {
 }
 
 type AnykHTTPCheck struct {
-	Verb               string            `yaml:"verb,omitempty"                json:"verb,omitempty"`
-	URL                string            `yaml:"url,omitempty"                 json:"url,omitempty"`
-	ExpectedCode       int               `yaml:"expected_code,omitempty"       json:"expected_code,omitempty"`
-	Headers            map[string]string `yaml:"headers,omitempty"             json:"headers,omitempty"`
-	Body               string            `yaml:"body,omitempty"                json:"body,omitempty"`
-	Timeout            int               `yaml:"timeout,omitempty"             json:"timeout,omitempty"`
+	Verb               string            `yaml:"verb,omitempty"                 json:"verb,omitempty"`
+	URL                string            `yaml:"url,omitempty"                  json:"url,omitempty"`
+	ExpectedCode       int               `yaml:"expected_code,omitempty"        json:"expected_code,omitempty"`
+	Headers            map[string]string `yaml:"headers,omitempty"              json:"headers,omitempty"`
+	Body               string            `yaml:"body,omitempty"                 json:"body,omitempty"`
+	Timeout            int               `yaml:"timeout,omitempty"              json:"timeout,omitempty"`
 	InsecureSkipVerify bool              `yaml:"insecure_skip_verify,omitempty" json:"insecure_skip_verify,omitempty"`
 }
 
@@ -80,5 +80,5 @@ type AnykDNSCheck struct {
 	Query       string `yaml:"query,omitempty"    json:"query,omitempty"`
 	Expected    string `yaml:"expected,omitempty" json:"expected,omitempty"`
 	Timeout     int    `yaml:"timeout,omitempty"  json:"timeout,omitempty"`
-	FollowCNAME bool   `yaml:"follow_cname" json:"follow_cname"`
+	FollowCNAME bool   `yaml:"follow_cname"       json:"follow_cname"`
 }
