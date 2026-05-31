@@ -81,14 +81,14 @@ func vtyshShowSelfOriginate(ctx context.Context, afi string, filter []*net.IPNet
 	l.Debug().Strs("command", command).Msgf("executing vtysh command")
 
 	cmd := exec.CommandContext(ctx, command[0], command[1:]...)
-	out, err := cmd.Output()
+	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("vtysh: %w: %s", err, out)
 	}
 
 	soRoutes := vtyshSelfOriginate{}
 	if err := json.Unmarshal(out, &soRoutes); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("vtysh: unmarshal self-originate: %w: %s", err, out)
 	}
 
 	if len(filter) == 0 {
@@ -129,14 +129,14 @@ func vtyshShowRoutes(ctx context.Context, afi string, filter []*net.IPNet) (vtys
 	l.Debug().Strs("command", command).Msgf("executing vtysh command")
 
 	cmd := exec.CommandContext(ctx, command[0], command[1:]...)
-	out, err := cmd.Output()
+	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("vtysh: %w: %s", err, out)
 	}
 
 	routes := vtyshRoutes{}
 	if err := json.Unmarshal(out, &routes); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("vtysh: unmarshal routes: %w: %s", err, out)
 	}
 
 	if len(filter) == 0 {
